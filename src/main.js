@@ -10,6 +10,7 @@ import { buildGround } from './ground.js';
 import { buildStore } from './store.js';
 import { buildStreet } from './street.js';
 import { buildRain, uTime } from './fx.js';
+import { mergeStatic } from './merge.js';
 
 const PR = Math.min(window.devicePixelRatio || 1, 2);
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
@@ -51,6 +52,7 @@ buildStore();
 buildStreet();
 buildProds();
 buildRain();
+mergeStatic(scene, runTicks);
 
 // ---------- toon outline: normal + depth edge detection ----------
 const normalRT = new THREE.WebGLRenderTarget(Math.max(2, innerWidth) * PR, Math.max(2, innerHeight) * PR, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
@@ -87,9 +89,16 @@ const outlineShader = {
     }`,
 };
 
-const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(Math.max(2, innerWidth) * PR, Math.max(2, innerHeight) * PR, { type: THREE.HalfFloatType, samples: 4 }));
-composer.addPass(new RenderPass(scene, camera));
-const outlinePass = new ShaderPass(outlineShader);
+// Only the scene itself needs MSAA. Full-screen post passes write the same value to every sample,
+// so running them on plain (non-multisampled) targets gives an identical image at a fraction of the cost.
+const sceneRT = new THREE.WebGLRenderTarget(Math.max(2, innerWidth) * PR, Math.max(2, innerHeight) * PR, { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(Math.max(2, innerWidth) * PR, Math.max(2, innerHeight) * PR, { type: THREE.HalfFloatType }));
+const scenePass = new RenderPass(scene, camera);
+scenePass.needsSwap = false;
+scenePass.render = function (r) { RenderPass.prototype.render.call(this, r, sceneRT, sceneRT); };
+composer.addPass(scenePass);
+const outlinePass = new ShaderPass(outlineShader, 'tSceneInput'); // reads sceneRT directly instead of the composer's read buffer
+outlinePass.uniforms.tDiffuse.value = sceneRT.texture;
 outlinePass.uniforms.tNormal.value = normalRT.texture;
 outlinePass.uniforms.tDepth.value = normalRT.depthTexture;
 composer.addPass(outlinePass);
@@ -102,7 +111,7 @@ composer.addPass(fxaa);
 function resize() {
   const w = W(), h = Hh();
   camera.aspect = w / h; camera.updateProjectionMatrix();
-  renderer.setSize(w, h); composer.setSize(w, h);
+  renderer.setSize(w, h); composer.setSize(w, h); sceneRT.setSize(w * PR, h * PR);
   normalRT.setSize(w * PR, h * PR);
   outlinePass.uniforms.texel.value.set(1 / (w * PR), 1 / (h * PR));
   outlinePass.uniforms.thick.value = Math.max(1, PR * 0.62);
